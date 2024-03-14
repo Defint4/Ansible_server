@@ -1,0 +1,96 @@
+- name: Configurer SNMP sur les hôtes Linux
+  hosts: linux
+  become: true  # Utilisez l'élévation de privilèges pour installer des paquets
+  tasks:
+    - name: Installer SNMP
+      ansible.builtin.package:
+        name: snmpd
+        state: present
+
+    - name: Copier le fichier de configuration SNMP
+      ansible.builtin.copy:
+        src: /home/user/ansible/conf/snmpd.conf
+        dest: /etc/snmp/snmpd.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: redémarrer snmpd
+
+    - name: Activer et démarrer le service SNMP
+      ansible.builtin.service:
+        name: snmpd
+        enabled: true
+        state: started
+
+  handlers:
+    - name: redémarrer snmpd
+      ansible.builtin.service:
+        name: snmpd
+        state: restarted
+
+#------------------------CENTREON-------------------------------------------------
+- name: Intégrer la supervision Centreon pour les hôtes Linux et Windows
+  hosts: Centreon
+  gather_facts: no
+  vars_files:
+    - ../conf/secrets.yml
+  tasks:
+    - name: Obtenir le token d'authentification de l'API Centreon
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=authenticate"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          username: "{{ centreon_admin_user }}"
+          password: "{{ centreon_admin_password }}"
+        return_content: yes
+      register: login_response
+
+#-----------------------------LINUX-----------------------------------------------
+    - name: Vérifier si l'hôte Linux existe déjà dans Centreon
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        return_content: yes
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "show"
+          object: "host"
+          values: "LinuxHost"
+      register: host_check
+      delegate_to: localhost
+
+    - name: Vérifier la présence de l'hôte dans la réponse
+      set_fact:
+        host_exists: "{{ 'LinuxHost' in host_check.content }}"
+
+    - name: Ajouter un hôte Linux à Centreon si non existant
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "add"
+          object: "host"
+          values: "LinuxHost;LinuxHost;192.168.0.4;OS-Linux-SNMP-custom;Central;"
+      when: not host_exists
+      delegate_to: localhost
+
+#------------------------RECHARGE----------------------------------------------------------------------------------
+
+    - name: Recharger la configuration Linux
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "applytpl"
+          object: "host"
+          values: "LinuxHost"
+      delegate_to: localhost

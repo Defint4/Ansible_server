@@ -1,0 +1,7 @@
+- import_playbook: linux_playbook.yml
+- import_playbook: windows_playbook.yml
+
+- name: Lancer le playbook de changement de mot de passe si requis
+  import_playbook: change_password.yml
+  when: change_password | default(false) | bool
+ 

@@ -1,0 +1,86 @@
+- name: Configurer SNMP sur les hôtes Windows
+  hosts: windows
+  become: false
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Installer la fonctionnalité SNMP
+      ansible.windows.win_feature:
+        name: SNMP-Service
+        include_management_tools: true
+        state: present
+
+    - name: Configurer les paramètres SNMP via le registre Windows
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters
+        name: Contact
+        data: Admin
+        type: string
+
+#------------------------CENTREON-------------------------------------------------
+- name: Intégrer la supervision Centreon pour les hôtes Linux et Windows
+  hosts: Centreon
+  gather_facts: no
+  vars_files:
+    - ../conf/secrets.yml
+  tasks:
+    - name: Obtenir le token d'authentification de l'API Centreon
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=authenticate"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          username: "{{ centreon_admin_user }}"
+          password: "{{ centreon_admin_password }}"
+        return_content: yes
+      register: login_response
+
+#--------------------------WINDOWS-----------------------------------------------------------------------
+    - name: Vérifier si l'hôte Windows existe déjà dans Centreon
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        return_content: yes
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "show"
+          object: "host"
+          values: "WindowsHost"
+      register: host_win_check
+      delegate_to: localhost
+
+    - name: Vérifier la présence de l'hôte dans la réponse
+      set_fact:
+        host_win_exists: "{{ 'WindowsHost' in host_win_check.content }}"
+
+
+    - name: Ajouter un hôte Windows à Centreon
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "add"
+          object: "host"
+          values: "WindowsHost;WindowsHost;192.168.0.2;OS-Windows-SNMP-custom;Central;"
+      when: not host_win_exists
+      delegate_to: localhost
+
+
+#------------------------RECHARGE----------------------------------------------------------------------------------
+    - name: Recharger la configuration Windows
+      uri:
+        url: "http://192.168.0.3/centreon/api/index.php?action=action&object=centreon_clapi"
+        method: POST
+        body_format: json
+        headers:
+          centreon-auth-token: "{{ login_response.json.authToken }}"
+        body:
+          action: "applytpl"
+          object: "host"
+          values: "WindowsHost"
+      delegate_to: localhost
